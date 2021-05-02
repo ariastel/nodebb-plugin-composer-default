@@ -6,7 +6,7 @@
 define('composer/resize', ['taskbar'], function(taskbar) {
 	var resize = {};
 	var oldRatio = 0;
-	var minimumRatio = 0.3;
+	var minimumRatio = 0.2;
 	var snapMargin = 0.05;
 	var mediumMin = 992;
 
