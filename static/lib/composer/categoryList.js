@@ -1,9 +1,11 @@
 
 'use strict';
 
-/*globals define, socket, app*/
+/* globals define, $, window, ajaxify, config */
 
-define('composer/categoryList', ['categorySelector', 'taskbar'], function (categorySelector, taskbar) {
+define('composer/categoryList', [
+	'categorySelector', 'taskbar', 'api',
+], function (categorySelector, taskbar, api) {
 	var categoryList = {};
 
 	var selector;
@@ -18,60 +20,47 @@ define('composer/categoryList', ['categorySelector', 'taskbar'], function (categ
 			toggleDropDirection(postContainer);
 		});
 
-		socket.emit('plugins.composer.getCategoriesForSelect', {}, function (err, categories) {
-			if (err) {
-				return app.alertError(err.message);
-			}
-			// Save hash for queries
-			categoryList._map = categories.reduce(function (memo, cur) {
-				memo[cur.cid] = cur;
-				return memo;
-			}, {});
+		categoryList.updateTaskbar(postContainer, postData);
 
-			categories.forEach(function (category) {
-				if (!category.disabledClass) {
-					$('<li data-cid="' + category.cid + '">' + category.name + '</li>').translateText(category.name).appendTo($('.category-selector'));
+		selector = categorySelector.init(listContainer.find('[component="category-selector"]'), {
+			privilege: 'topics:create',
+			states: ['watching', 'notwatching', 'ignoring'],
+			onSelect: function (selectedCategory) {
+				if (postData.hasOwnProperty('cid')) {
+					changeCategory(postContainer, postData, selectedCategory);
 				}
-			});
+			},
+		});
+		if (!selector) {
+			return;
+		}
+		if (postData.cid && ajaxify.data.template.category && parseInt(postData.cid, 10) === parseInt(ajaxify.data.cid, 10)) {
+			selector.selectedCategory = { cid: postData.cid, name: ajaxify.data.name };
+		} else if (ajaxify.data.template.compose && ajaxify.data.selectedCategory) {
+			// separate composer route
+			selector.selectedCategory = { cid: ajaxify.data.cid, name: ajaxify.data.selectedCategory };
+		}
 
-			categoryList.updateTaskbar(postContainer, postData);
-
-			app.parseAndTranslate('partials/category-selector', {
-				categories: categories,
-				pullRight: false,
-			}, function (html) {
-				listContainer.append(html);
-				selector = categorySelector.init(listContainer.find('[component="category-selector"]'), function (selectedCategory) {
-					if (postData.hasOwnProperty('cid')) {
-						changeCategory(postContainer, postData, selectedCategory.cid);
-					}
+		// this is the mobile category selector
+		postContainer.find('.category-name')
+			.translateText(selector.selectedCategory ? selector.selectedCategory.name : '[[modules:composer.select_category]]')
+			.on('click', function () {
+				categorySelector.modal({
+					privilege: 'topics:create',
+					states: ['watching', 'notwatching', 'ignoring'],
+					openOnLoad: true,
+					showLinks: false,
+					onSelect: function (selectedCategory) {
+						postContainer.find('.category-name').text(selectedCategory.name);
+						selector.selectCategory(selectedCategory.cid);
+						if (postData.hasOwnProperty('cid')) {
+							changeCategory(postContainer, postData, selectedCategory);
+						}
+					},
 				});
-
-				if (postData.cid) {
-					selector.selectCategory(postData.cid);
-				}
-
-				var selectedCategory = selector.getSelectedCategory();
-
-				postContainer.find('.category-name').translateText(selectedCategory ? selectedCategory.name : '[[modules:composer.select_category]]');
-				postContainer.find('.category-selector').find('li[data-cid="' + postData.cid + '"]').addClass('active');
-
-				toggleDropDirection(postContainer);
 			});
-		});
 
-
-		$('.category-selector').on('click', 'li', function () {
-			$('.category-name').text($(this).text());
-			$('.category-selector').removeClass('open');
-			$('.category-selector li').removeClass('active');
-			$(this).addClass('active');
-			var selectedCid = $(this).attr('data-cid');
-			selector.selectCategory(selectedCid);
-			if (postData.hasOwnProperty('cid')) {
-				changeCategory(postContainer, postData, selectedCid);
-			}
-		});
+		toggleDropDirection(postContainer);
 	};
 
 	function toggleDropDirection(postContainer) {
@@ -87,25 +76,40 @@ define('composer/categoryList', ['categorySelector', 'taskbar'], function (categ
 	};
 
 	categoryList.updateTaskbar = function (postContainer, postData) {
-		var uuid = postContainer.attr('data-uuid');
-		var category = categoryList._map[postData.cid];
+		if (parseInt(postData.cid, 10)) {
+			api.get(`/categories/${postData.cid}`, {}).then(function (category) {
+				updateTaskbarByCategory(postContainer, category);
+			});
+		}
+	};
+
+	function updateTaskbarByCategory(postContainer, category) {
 		if (category) {
+			var uuid = postContainer.attr('data-uuid');
 			taskbar.update('composer', uuid, {
 				image: category.backgroundImage,
 				'background-color': category.bgColor,
-				icon: category.icon.slice(3),
+				icon: category.icon && category.icon.slice(3),
 			});
 		}
 	}
 
-	function changeCategory(postContainer, postData, cid) {
-		postData.cid = cid;
+	async function changeCategory(postContainer, postData, selectedCategory) {
+		postData.cid = selectedCategory.cid;
+		const categoryData = await window.fetch(`${config.relative_path}/api/category/${selectedCategory.cid}`).then(r => r.json());
 
-		require(['composer/tags'], function (tags) {
-			tags.onChangeCategory(postContainer, postData, cid);
+		updateTaskbarByCategory(postContainer, categoryData);
+		require(['composer/scheduler', 'composer/tags'], function (scheduler, tags) {
+			scheduler.onChangeCategory(categoryData);
+			tags.onChangeCategory(postContainer, postData, selectedCategory.cid, categoryData);
+
+			$(window).trigger('action:composer.changeCategory', {
+				postContainer: postContainer,
+				postData: postData,
+				selectedCategory: selectedCategory,
+				categoryData: categoryData,
+			});
 		});
-
-		categoryList.updateTaskbar(postContainer, postData);
 	}
 
 	return categoryList;

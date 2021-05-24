@@ -1,11 +1,10 @@
 'use strict';
 
-/* globals $, window, history, localStorage, document, define, socket, app, config, ajaxify, utils, bootbox, screenfull */
+/* globals $, window, history, localStorage, document, define, socket, app, config, ajaxify, utils, screenfull */
 
 define('composer', [
 	'taskbar',
 	'translator',
-	'composer/controls',
 	'composer/uploads',
 	'composer/formatting',
 	'composer/drafts',
@@ -14,10 +13,13 @@ define('composer', [
 	'composer/preview',
 	'composer/resize',
 	'composer/autocomplete',
+	'composer/scheduler',
 	'scrollStop',
 	'topicThumbs',
 	'api',
-], function (taskbar, translator, controls, uploads, formatting, drafts, tags, categoryList, preview, resize, autocomplete, scrollStop, topicThumbs, api) {
+	'bootbox',
+	'hooks',
+], function (taskbar, translator, uploads, formatting, drafts, tags, categoryList, preview, resize, autocomplete, scheduler, scrollStop, topicThumbs, api, bootbox, hooks) {
 	var composer = {
 		active: undefined,
 		posts: {},
@@ -26,7 +28,6 @@ define('composer', [
 	};
 
 	$(window).off('resize', onWindowResize).on('resize', onWindowResize);
-	$(document).off('keyup', onKeyUp).on('keyup', onKeyUp);
 	onWindowResize();
 
 	$(window).on('action:composer.topics.post', function (ev, data) {
@@ -99,15 +100,6 @@ define('composer', [
 		composer.bsEnvironment = env;
 	}
 
-	function onKeyUp(event) {
-		if (composer.active) {
-			var keycode = (event.which ? event.which : event.keyCode);
-			if (keycode === 27) { // escape
-				composer.minimize(composer.active);
-			}
-		}
-	}
-
 	function alreadyOpen(post) {
 		// If a composer for the same cid/tid/pid is already open, return the uuid, else return bool false
 		var	type;
@@ -169,15 +161,20 @@ define('composer', [
 		composer.load(uuid);
 	}
 
-	function composerAlert(post_uuid, message) {
+	async function composerAlert(post_uuid, message) {
 		$('.composer[data-uuid="' + post_uuid + '"]').find('.composer-submit').removeAttr('disabled');
-		app.alert({
-			type: 'danger',
-			timeout: 3000,
-			title: '',
-			message: message,
-			alert_id: 'post_error',
-		});
+
+		const { showAlert } = await hooks.fire('filter:composer.error', { post_uuid, message, showAlert: true });
+
+		if (showAlert) {
+			app.alert({
+				type: 'danger',
+				timeout: 3000,
+				title: '',
+				message: message,
+				alert_id: 'post_error',
+			});
+		}
 	}
 
 	composer.findByTid = function (tid) {
@@ -323,6 +320,7 @@ define('composer', [
 		var submitBtn = postContainer.find('.composer-submit');
 
 		categoryList.init(postContainer, composer.posts[post_uuid]);
+		scheduler.init(postContainer, composer.posts);
 
 		formatting.addHandler(postContainer);
 		formatting.addComposerButtons();
@@ -427,20 +425,21 @@ define('composer', [
 			$('[data-format="zen"]').addClass('hidden');
 		}
 
-		$(window).trigger('action:composer.enhanced', {
+		hooks.fire('action:composer.enhanced', {
 			postContainer: postContainer,
 			postData: postData,
 			draft: draft,
 		});
 	};
 
-	function createNewComposer(post_uuid) {
+	async function createNewComposer(post_uuid) {
 		var postData = composer.posts[post_uuid];
 
 		var isTopic = postData ? postData.hasOwnProperty('cid') : false;
 		var isMain = postData ? !!postData.isMain : false;
 		var isEditing = postData ? !!postData.pid : false;
 		var isGuestPost = postData ? parseInt(postData.uid, 10) === 0 : false;
+		const isScheduled = postData.timestamp > Date.now();
 
 		// see
 		// https://github.com/NodeBB/NodeBB/issues/2994 and
@@ -451,19 +450,32 @@ define('composer', [
 
 		var data = {
 			title: title,
+			titleLength: title.length,
 			mobile: composer.bsEnvironment === 'xs' || composer.bsEnvironment === 'sm',
 			resizable: true,
 			thumb: postData.thumb,
 			isTopicOrMain: isTopic || isMain,
+			maximumTitleLength: config.maximumTitleLength,
+			maximumPostLength: config.maximumPostLength,
 			minimumTagLength: config.minimumTagLength,
 			maximumTagLength: config.maximumTagLength,
 			isTopic: isTopic,
 			isEditing: isEditing,
+			canSchedule: !!(ajaxify.data.privileges &&
+				(ajaxify.data.privileges['topics:schedule'] || (isMain && isScheduled && ajaxify.data.privileges.view_scheduled))),
 			showHandleInput: config.allowGuestHandles && (app.user.uid === 0 || (isEditing && isGuestPost && app.user.isAdmin)),
 			handle: postData ? postData.handle || '' : undefined,
 			formatting: composer.formatting,
 			tagWhitelist: ajaxify.data.tagWhitelist,
 			privileges: app.user.privileges,
+			selectedCategory: ajaxify.data.template.category ? {
+				icon: ajaxify.data.icon,
+				color: ajaxify.data.color,
+				bgColor: ajaxify.data.bgColor,
+				backgroundImage: ajaxify.data.backgroundImage,
+				imageClass: ajaxify.data.imageClass,
+				name: ajaxify.data.name,
+			} : null,
 		};
 
 		if (data.mobile) {
@@ -474,10 +486,10 @@ define('composer', [
 
 		postData.mobile = composer.bsEnvironment === 'xs' || composer.bsEnvironment === 'sm';
 
-		$(window).trigger('filter:composer.create', {
+		({ postData, createData: data } = await hooks.fire('filter:composer.create', {
 			postData: postData,
 			createData: data,
-		});
+		}));
 
 		app.parseAndTranslate('composer', data, function (composerTemplate) {
 			if ($('.composer.composer[data-uuid="' + post_uuid + '"]').length) {
@@ -543,7 +555,7 @@ define('composer', [
 
 	function mobileHistoryAppend() {
 		var path = 'compose?p=' + window.location.pathname;
-		var returnPath = window.location.pathname.slice(1);
+		var returnPath = window.location.pathname.slice(1) + window.location.search;
 
 		// Remove relative path from returnPath
 		if (returnPath.startsWith(config.relative_path.slice(1))) {
@@ -559,7 +571,7 @@ define('composer', [
 		// Update address bar in case f5 is pressed
 		window.history.pushState({
 			url: path,
-		}, path, config.relative_path + '/' + path);
+		}, path, `${config.relative_path}/${returnPath}`);
 	}
 
 	function handleHelp(postContainer) {
@@ -646,7 +658,12 @@ define('composer', [
 			bodyEl: bodyEl,
 			bodyLen: bodyEl.val().length,
 		};
-		$(window).trigger('action:composer.check', payload);
+
+		hooks.fire('action:composer.check', payload);
+
+		if (payload.error) {
+			return composerAlert(post_uuid, payload.error);
+		}
 
 		if (uploads.inProgress[post_uuid] && uploads.inProgress[post_uuid].length) {
 			return composerAlert(post_uuid, '[[error:still-uploading]]');
@@ -662,6 +679,8 @@ define('composer', [
 			return composerAlert(post_uuid, '[[error:content-too-long, ' + config.maximumPostLength + ']]');
 		} else if (checkTitle && !tags.isEnoughTags(post_uuid)) {
 			return composerAlert(post_uuid, '[[error:not-enough-tags, ' + tags.minTagCount() + ']]');
+		} else if (scheduler.isActive() && scheduler.getTimestamp() <= Date.now()) {
+			return composerAlert(post_uuid, '[[error:scheduling-to-past]]');
 		}
 
 		let composerData = {
@@ -680,6 +699,7 @@ define('composer', [
 				thumb: thumbEl.val() || '',
 				cid: categoryList.getSelectedCid(),
 				tags: tags.getTags(post_uuid),
+				timestamp: scheduler.getTimestamp(),
 			};
 		} else if (action === 'posts.reply') {
 			route = `/topics/${postData.tid}`;
@@ -701,6 +721,7 @@ define('composer', [
 				title: titleEl.val(),
 				thumb: thumbEl.val() || '',
 				tags: tags.getTags(post_uuid),
+				timestamp: scheduler.getTimestamp(),
 			};
 		}
 		var submitHookData = {
@@ -710,7 +731,7 @@ define('composer', [
 			postData: postData,
 			redirect: true,
 		};
-		$(window).trigger('action:composer.submit', submitHookData);
+		hooks.fire('action:composer.submit', submitHookData);
 
 		// Minimize composer (and set textarea as readonly) while submitting
 		var taskbarIconEl = $('#taskbar .composer[data-uuid="' + post_uuid + '"] i');
@@ -721,7 +742,7 @@ define('composer', [
 
 		api[method](route, composerData)
 			.then((data) => {
-				postContainer.find('.composer-submit').removeAttr('disabled');
+				submitBtn.removeAttr('disabled');
 				postData.submitted = true;
 
 				composer.discard(post_uuid);
@@ -752,11 +773,10 @@ define('composer', [
 				// Restore composer on error
 				composer.load(post_uuid);
 				textareaEl.prop('readonly', false);
-				submitBtn.prop('disabled', false);
 				if (err.message === '[[error:email-not-confirmed]]') {
 					return app.showEmailConfirmWarning(err);
 				}
-				app.alertError(err);
+				composerAlert(post_uuid, err.message);
 			});
 	}
 
@@ -781,13 +801,14 @@ define('composer', [
 			taskbar.discard('composer', post_uuid);
 			$('[data-action="post"]').removeAttr('disabled');
 
-			$(window).trigger('action:composer.discard', {
+			hooks.fire('action:composer.discard', {
 				post_uuid: post_uuid,
 				postData: postData,
 			});
 			delete composer.posts[post_uuid];
 			composer.active = undefined;
 		}
+		scheduler.reset();
 		onHide();
 	};
 
