@@ -145,17 +145,21 @@ plugin.filterComposerBuild = async function (hookData) {
 		tagWhitelist,
 		globalPrivileges,
 		canTagTopics,
+		canScheduleTopics,
 	] = await Promise.all([
 		posts.isMain(req.query.pid),
 		getPostData(req),
 		getTopicData(req),
-		categories.getCategoryFields(req.query.cid, ['minTags', 'maxTags']),
+		categories.getCategoryFields(req.query.cid, [
+			'name', 'icon', 'color', 'bgColor', 'backgroundImage', 'imageClass', 'minTags', 'maxTags',
+		]),
 		user.isAdministrator(req.uid),
 		isModerator(req),
 		plugin.getFormattingOptions(),
 		getTagWhitelist(req.query),
 		privileges.global.get(req.uid),
 		canTag(req),
+		canSchedule(req),
 	]);
 
 	const isEditing = !!req.query.pid;
@@ -174,6 +178,8 @@ plugin.filterComposerBuild = async function (hookData) {
 		isMain = true;
 	}
 	globalPrivileges['topics:tag'] = canTagTopics;
+	const cid = parseInt(req.query.cid, 10);
+	const topicTitle = topicData ? topicData.title.replace(/%/g, '&#37;').replace(/,/g, '&#44;') : '';
 	return {
 		req: req,
 		res: res,
@@ -181,7 +187,7 @@ plugin.filterComposerBuild = async function (hookData) {
 			disabled: !req.query.pid && !req.query.tid && !req.query.cid,
 			pid: parseInt(req.query.pid, 10),
 			tid: parseInt(req.query.tid, 10),
-			cid: parseInt(req.query.cid, 10) || (topicData ? topicData.cid : null),
+			cid: cid || (topicData ? topicData.cid : null),
 			action: action,
 			toPid: parseInt(req.query.toPid, 10),
 			discardRoute: discardRoute,
@@ -189,20 +195,27 @@ plugin.filterComposerBuild = async function (hookData) {
 			resizable: false,
 			allowTopicsThumbnail: parseInt(meta.config.allowTopicsThumbnail, 10) === 1 && isMain,
 
-			topicTitle: topicData ? topicData.title.replace(/%/g, '&#37;').replace(/,/g, '&#44;') : '',
+			// can't use title property as that is used for page title
+			topicTitle: topicTitle,
+			titleLength: topicTitle.length,
+
 			thumb: topicData ? topicData.thumb : '',
 			body: body,
 
 			isMain: isMain,
 			isTopicOrMain: !!req.query.cid || isMain,
+			maximumTitleLength: meta.config.maximumTitleLength,
+			maximumPostLength: meta.config.maximumPostLength,
 			minimumTagLength: meta.config.minimumTagLength || 3,
 			maximumTagLength: meta.config.maximumTagLength || 15,
 			tagWhitelist: tagWhitelist,
+			selectedCategory: cid ? categoryData : null,
 			minTags: categoryData.minTags,
 			maxTags: categoryData.maxTags,
 
 			isTopic: !!req.query.cid,
 			isEditing: isEditing,
+			canSchedule: canScheduleTopics,
 			showHandleInput: meta.config.allowGuestHandles === 1 && (req.uid === 0 || (isEditing && isGuestPost && (isAdmin || isMod))),
 			handle: postData ? postData.handle || '' : undefined,
 			formatting: formatting,
@@ -277,6 +290,13 @@ async function canTag(req) {
 		return await privileges.categories.can('topics:tag', req.query.cid, req.uid);
 	}
 	return true;
+}
+
+async function canSchedule(req) {
+	if (parseInt(req.query.cid, 10)) {
+		return await privileges.categories.can('topics:schedule', req.query.cid, req.uid);
+	}
+	return false;
 }
 
 async function getTagWhitelist(query) {

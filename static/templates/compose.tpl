@@ -17,8 +17,13 @@
 
 		<div class="title-container row">
 			<!-- IF isTopic -->
-			<div class="category-list-container"></div>
+			<div class="category-list-container"><!-- IMPORT partials/category-selector.tpl --></div>
 			<!-- ENDIF isTopic -->
+			<!-- IF isTopicOrMain -->
+			<div class="display-scheduler pull-right{{{ if !canSchedule }}} hidden{{{ end }}}">
+				<i class="fa fa-clock-o"></i>
+			</div>
+			<!-- ENDIF isTopicOrMain -->
 			<!-- IF showHandleInput -->
 			<div class="col-sm-3 col-md-12">
 				<input class="handle form-control" type="text" tabindex="1" placeholder="[[topic:composer.handle_placeholder]]" value="{handle}" />
@@ -75,7 +80,7 @@
 				<div class="btn-group pull-right action-bar">
 					<a href="{discardRoute}" class="btn btn-default composer-discard" data-action="discard" tabindex="-1"><i class="fa fa-times"></i> [[topic:composer.discard]]</a>
 
-					<button type="submit" form="compose-form" class="btn btn-primary composer-submit" data-action="post" tabindex="6"><i class="fa fa-check"></i> [[topic:composer.submit]]</button>
+					<button type="submit" form="compose-form" class="btn btn-primary composer-submit" data-action="post" tabindex="6" data-text-variant=" [[topic:composer.schedule]]"><i class="fa fa-check"></i> [[topic:composer.submit]]</button>
 				</div>
 			</div>
 		</div>
