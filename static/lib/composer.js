@@ -1,6 +1,6 @@
 'use strict';
 
-/* globals $, window, history, localStorage, document, define, socket, app, config, ajaxify, utils, screenfull */
+/* globals screenfull */
 
 define('composer', [
 	'taskbar',
@@ -19,7 +19,8 @@ define('composer', [
 	'api',
 	'bootbox',
 	'hooks',
-], function (taskbar, translator, uploads, formatting, drafts, tags, categoryList, preview, resize, autocomplete, scheduler, scrollStop, topicThumbs, api, bootbox, hooks) {
+], function (taskbar, translator, uploads, formatting, drafts, tags,
+	categoryList, preview, resize, autocomplete, scheduler, scrollStop, topicThumbs, api, bootbox, hooks) {
 	var composer = {
 		active: undefined,
 		posts: {},
@@ -215,7 +216,7 @@ define('composer', [
 		uuid = uuid || composer.active;
 
 		var escapedTitle = (title || '')
-			.replace(/([\\`*_{}\[\]()#+\-.!])/g, '\\$1')
+			.replace(/([\\`*_{}[\]()#+\-.!])/g, '\\$1')
 			.replace(/\[/g, '&#91;')
 			.replace(/\]/g, '&#93;')
 			.replace(/%/g, '&#37;')
@@ -432,6 +433,24 @@ define('composer', [
 		});
 	};
 
+	async function getSelectedCategory(postData) {
+		if (ajaxify.data.template.category) {
+			return {
+				icon: ajaxify.data.icon,
+				color: ajaxify.data.color,
+				bgColor: ajaxify.data.bgColor,
+				backgroundImage: ajaxify.data.backgroundImage,
+				imageClass: ajaxify.data.imageClass,
+				name: ajaxify.data.name,
+			};
+		} else if (ajaxify.data.template.compose && ajaxify.data.selectedCategory) {
+			return ajaxify.data.selectedCategory;
+		} else if (postData.cid) {
+			return await api.get(`/categories/${postData.cid}`, {});
+		}
+		return null;
+	}
+
 	async function createNewComposer(post_uuid) {
 		var postData = composer.posts[post_uuid];
 
@@ -447,7 +466,7 @@ define('composer', [
 		// remove when 1951 is resolved
 
 		var title = postData.title.replace(/%/g, '&#37;').replace(/,/g, '&#44;');
-
+		postData.category = await getSelectedCategory(postData);
 		var data = {
 			title: title,
 			titleLength: title.length,
@@ -463,19 +482,13 @@ define('composer', [
 			isEditing: isEditing,
 			canSchedule: !!(ajaxify.data.privileges &&
 				(ajaxify.data.privileges['topics:schedule'] || (isMain && isScheduled && ajaxify.data.privileges.view_scheduled))),
-			showHandleInput: config.allowGuestHandles && (app.user.uid === 0 || (isEditing && isGuestPost && app.user.isAdmin)),
+			showHandleInput: config.allowGuestHandles &&
+				(app.user.uid === 0 || (isEditing && isGuestPost && app.user.isAdmin)),
 			handle: postData ? postData.handle || '' : undefined,
 			formatting: composer.formatting,
 			tagWhitelist: ajaxify.data.tagWhitelist,
 			privileges: app.user.privileges,
-			selectedCategory: ajaxify.data.template.category ? {
-				icon: ajaxify.data.icon,
-				color: ajaxify.data.color,
-				bgColor: ajaxify.data.bgColor,
-				backgroundImage: ajaxify.data.backgroundImage,
-				imageClass: ajaxify.data.imageClass,
-				name: ajaxify.data.name,
-			} : null,
+			selectedCategory: postData.category,
 		};
 
 		if (data.mobile) {
@@ -542,6 +555,7 @@ define('composer', [
 			}
 
 			$(window).trigger('action:composer.loaded', {
+				postContainer: postContainer,
 				post_uuid: post_uuid,
 				composerData: composer.posts[post_uuid],
 				formatting: composer.formatting,
@@ -627,7 +641,7 @@ define('composer', [
 		}, 20);
 	}
 
-	function post(post_uuid) {
+	async function post(post_uuid) {
 		var postData = composer.posts[post_uuid];
 		var postContainer = $('.composer[data-uuid="' + post_uuid + '"]');
 		var handleEl = postContainer.find('.handle');
@@ -659,7 +673,8 @@ define('composer', [
 			bodyLen: bodyEl.val().length,
 		};
 
-		hooks.fire('action:composer.check', payload);
+		await hooks.fire('filter:composer.check', payload);
+		$(window).trigger('action:composer.check', payload);
 
 		if (payload.error) {
 			return composerAlert(post_uuid, payload.error);
@@ -731,7 +746,9 @@ define('composer', [
 			postData: postData,
 			redirect: true,
 		};
-		hooks.fire('action:composer.submit', submitHookData);
+
+		await hooks.fire('filter:composer.submit', submitHookData);
+		hooks.fire('action:composer.submit', Object.freeze(submitHookData));
 
 		// Minimize composer (and set textarea as readonly) while submitting
 		var taskbarIconEl = $('#taskbar .composer[data-uuid="' + post_uuid + '"] i');

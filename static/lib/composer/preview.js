@@ -1,8 +1,6 @@
 'use strict';
 
-/* globals define, socket, $, window, utils, localStorage */
-
-define('composer/preview', function () {
+define('composer/preview', ['hooks'], function (hooks) {
 	var preview = {};
 
 	var timeoutId = 0;
@@ -28,7 +26,7 @@ define('composer/preview', function () {
 				preview = $('<div>' + preview + '</div>');
 				preview.find('img:not(.not-responsive)').addClass('img-responsive');
 				postContainer.find('.preview').html(preview);
-				$(window).trigger('action:composer.preview');
+				hooks.fire('action:composer.preview');
 				callback();
 			});
 		}, 250);
